@@ -2,4 +2,6 @@ pandas
 scikit-learn
 joblib
 scapy
+torch
+torchvision
 

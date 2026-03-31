@@ -3,15 +3,64 @@ import math
 import os
 import time
 from collections import defaultdict
+from typing import Optional
 
 import joblib
 import pandas as pd
+import torch
+import torch.nn as nn
 from scapy.all import sniff, IP, TCP, UDP, ARP
 
 
-MODEL_PATH = "model.pkl"
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        return x + self.pe[:x.size(0), :]
+
+
+class TransformerAutoencoder(nn.Module):
+    def __init__(self, input_dim, d_model=128, nhead=8, num_layers=4, dim_feedforward=512, dropout=0.1):
+        super().__init__()
+        self.input_dim = input_dim
+        self.embedding = nn.Linear(1, d_model)  # embed each feature value
+        self.pos_encoder = PositionalEncoding(d_model, max_len=input_dim)
+        self.encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=False),
+            num_layers
+        )
+        self.decoder = nn.TransformerDecoder(
+            nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=False),
+            num_layers
+        )
+        self.output = nn.Linear(d_model, 1)
+
+    def forward(self, src):
+        # src: (batch, seq_len)
+        src = src.unsqueeze(-1)  # (batch, seq_len, 1)
+        src_emb = self.embedding(src)  # (batch, seq_len, d_model)
+        src_emb = src_emb.transpose(0, 1)  # (seq_len, batch, d_model)
+        src_emb = self.pos_encoder(src_emb)
+        memory = self.encoder(src_emb)
+        # For decoder, use src_emb as tgt (teacher forcing for reconstruction)
+        tgt_emb = src_emb
+        output = self.decoder(tgt_emb, memory)
+        output = output.transpose(0, 1)  # (batch, seq_len, d_model)
+        output = self.output(output).squeeze(-1)  # (batch, seq_len)
+        return output
+
+
+MODEL_PATH = "model.pth"
+SCALER_PATH = "scaler.pkl"
 FEATURES_PATH = "features.pkl"
-ENCODER_PATH = "label_encoder.pkl"
 
 # Canlı akışlardan çıkarılan feature'ların isteğe bağlı loglanacağı CSV
 FLOW_CSV = "live_flows.csv"
@@ -260,9 +309,9 @@ def finalize_flow(
     key,
     flow: FlowStats,
     model,
+    scaler,
     feature_names,
-    label_encoder,
-    csv_writer: csv.writer | None = None,
+    csv_writer: Optional[csv.writer] = None,
 ) -> None:
     dur = max(flow.last_ts - flow.first_ts, 1e-6)
 
@@ -400,47 +449,61 @@ def finalize_flow(
         covariance,
         variance,
         weight,
-        "Benign",
     ]
 
     if csv_writer is not None:
         csv_writer.writerow(row)
 
-    df = pd.DataFrame([row], columns=FEATURE_HEADER)
+    df = pd.DataFrame([row], columns=FEATURE_HEADER[:-1])  # remove label
     X = df[feature_names]
-    y_pred = model.predict(X)
-    label = label_encoder.inverse_transform(y_pred)[0]
+    X_scaled = scaler.transform(X.values)
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
+    model.eval()
+    with torch.no_grad():
+        reconstructed = model(X_tensor)
+        mse = torch.mean((X_tensor - reconstructed) ** 2).item()
+
+    threshold = 0.1  # Adjust based on training data
+    if mse > threshold:
+        label = "Anomaly"
+    else:
+        label = "Normal"
 
     src, dst, sport, dport, proto = key
-    print(f"Flow {src}:{sport} -> {dst}:{dport} (proto={proto}) -> {label}")
+    print(f"Flow {src}:{sport} -> {dst}:{dport} (proto={proto}) -> MSE: {mse:.4f}, {label}")
 
 
 def expire_flows(
     model,
+    scaler,
     feature_names,
-    label_encoder,
-    csv_writer: csv.writer | None = None,
+    csv_writer: Optional[csv.writer] = None,
 ) -> None:
     now = time.time()
     to_delete = []
     for key, flow in list(flows.items()):
         if now - flow.last_ts > FLOW_TIMEOUT:
-            finalize_flow(key, flow, model, feature_names, label_encoder, csv_writer)
+            finalize_flow(key, flow, model, scaler, feature_names, csv_writer)
             to_delete.append(key)
     for key in to_delete:
         del flows[key]
 
 
 def main() -> None:
-    model = joblib.load(MODEL_PATH)
+    # Load model
+    input_dim = 46  # Assuming 46 features
+    model = TransformerAutoencoder(input_dim=input_dim)
+    model.load_state_dict(torch.load(MODEL_PATH))
+    model.eval()
+    
+    scaler = joblib.load(SCALER_PATH)
     feature_names = joblib.load(FEATURES_PATH)
-    label_encoder = joblib.load(ENCODER_PATH)
 
     print(f"Ağ arayüzü dinleniyor: {IFACE}")
 
     with open(FLOW_CSV, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(FEATURE_HEADER)
+        writer.writerow(FEATURE_HEADER[:-1])  # remove label
 
         last_expire_check = time.time()
 
@@ -449,7 +512,7 @@ def main() -> None:
             process_packet(pkt)
             now = time.time()
             if now - last_expire_check > 5.0:
-                expire_flows(model, feature_names, label_encoder, writer)
+                expire_flows(model, scaler, feature_names, writer)
                 last_expire_check = now
 
         sniff(iface=IFACE, prn=_cb, store=False)
