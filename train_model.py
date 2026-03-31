@@ -56,59 +56,101 @@ class TransformerAutoencoder(nn.Module):
 
 
 def main():
-    # CSV dosya adı
-    input_csv = "data.csv"
+    # CSV dosya adları
+    train_csv = "train.csv"
+    val_csv = "validation.csv"
+    test_csv = "test.csv"
 
-    df = pd.read_csv(input_csv)
+    # Eğitim verisini yükle
+    df_train = pd.read_csv(train_csv)
+    if df_train.columns[-1] != "label":
+        raise ValueError(f"Train CSV son sütun 'label' değil: {df_train.columns[-1]}")
+    X_train = df_train[df_train['label'] == 'benign'].iloc[:, :-1] if 'benign' in df_train['label'].values else df_train.iloc[:, :-1]
 
-    # Son sütunun label olduğundan emin ol
-    if df.columns[-1] != "label":
-        raise ValueError(f"Son sütun 'label' değil: {df.columns[-1]}")
+    # Validasyon verisini yükle
+    df_val = pd.read_csv(val_csv)
+    if df_val.columns[-1] != "label":
+        raise ValueError(f"Validation CSV son sütun 'label' değil: {df_val.columns[-1]}")
+    X_val = df_val[df_val['label'] == 'benign'].iloc[:, :-1] if 'benign' in df_val['label'].values else df_val.iloc[:, :-1]
 
-    # 46 feature + 1 label
-    X = df.iloc[:, :-1]
+    # Test verisini yükle (şimdilik sadece kontrol için)
+    df_test = pd.read_csv(test_csv)
+    if df_test.columns[-1] != "label":
+        raise ValueError(f"Test CSV son sütun 'label' değil: {df_test.columns[-1]}")
 
-    # For autoencoder, train on all data or filter benign
-    # Assume 'benign' is the normal class
-    if 'benign' in df['label'].values:
-        X = df[df['label'] == 'benign'].iloc[:, :-1]
-    else:
-        X = df.iloc[:, :-1]  # train on all if no 'benign'
+    # Özellik isimlerini kaydet
+    features = list(X_train.columns)
 
-    X_values = X.values
-
+    # Eğitim verisini ölçeklendir
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_values)
+    X_train_scaled = scaler.fit_transform(X_train.values)
+    X_val_scaled = scaler.transform(X_val.values)
 
-    X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
+    # Tensor'lara dönüştür
+    X_train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32)
+    X_val_tensor = torch.tensor(X_val_scaled, dtype=torch.float32)
 
-    dataset = TensorDataset(X_tensor, X_tensor)
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+    # Dataset ve DataLoader oluştur
+    train_dataset = TensorDataset(X_train_tensor, X_train_tensor)
+    val_dataset = TensorDataset(X_val_tensor, X_val_tensor)
+    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
-    input_dim = X.shape[1]  # 46
+    input_dim = X_train.shape[1]  # 46
     model = TransformerAutoencoder(input_dim=input_dim)
 
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
 
     num_epochs = 100
+    best_val_loss = float('inf')
+    patience = 10  # Early stopping patience
+    patience_counter = 0
+
     for epoch in range(num_epochs):
+        # Eğitim
         model.train()
-        total_loss = 0
-        for batch in dataloader:
+        train_loss = 0
+        for batch in train_dataloader:
             inputs, targets = batch
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
-            total_loss += loss.item()
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss / len(dataloader):.4f}")
+            train_loss += loss.item()
+        train_loss /= len(train_dataloader)
 
-    # Save model and scaler
+        # Validasyon
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for batch in val_dataloader:
+                inputs, targets = batch
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+                val_loss += loss.item()
+        val_loss /= len(val_dataloader)
+
+        print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+
+        # Early stopping
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            # En iyi modeli kaydet
+            torch.save(model.state_dict(), "best_model.pth")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch+1}")
+                break
+
+    # Final model ve scaler'ı kaydet (en iyi modeli yükle)
+    model.load_state_dict(torch.load("best_model.pth"))
     torch.save(model.state_dict(), "model.pth")
     joblib.dump(scaler, "scaler.pkl")
-    joblib.dump(list(X.columns), "features.pkl")
+    joblib.dump(features, "features.pkl")
     print("model.pth, scaler.pkl, features.pkl kaydedildi.")
 
 
