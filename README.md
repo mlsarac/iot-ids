@@ -21,7 +21,7 @@ Tespit için aşağıdaki dosyaların proje kökünde olması gerekir:
 | `features.pkl` | Modelin kullandığı feature isimleri listesi |
 | `label_encoder.pkl` | LabelEncoder (metin etiket ↔ sayı) |
 
-Bu dosyalar CICIOT-23 formatında feature’lara sahip bir CSV ile eğitim pipeline’ından üretilir. Projedeki **eğitim kodu (`train_model.py`) tamamen değişecek**; şu anki hâli geçici/placeholder’dır. Model dosyalarını başka bir ortamda veya ileride yazılacak yeni eğitim scripti ile üretebilirsiniz.
+Bu dosyalar CICIOT-23 formatında feature’lara sahip bir CSV ile eğitim pipeline’ından üretilir. Projedeki **eğitim kodu (`train_model.py`) Tramsformer Autoencoder ile eğitilmektedir**
 
 ## Model ve feature uyumluluğunu kontrol etme
 
@@ -116,8 +116,6 @@ sudo python detector_from_flows.py
 ```
 
 ## Eğitim (train)
-
-Projedeki `train_model.py` **tamamen değişecek**; şu anki içerik geçici örnek (CICIOT-23 CSV → model/features/encoder) olarak duruyor. Yeni eğitim pipeline’ı yazıldığında bu dosya baştan ele alınacak.
 
 ### Train modelinden beklenen çıktılar
 
