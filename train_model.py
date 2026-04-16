@@ -59,7 +59,7 @@ def main():
     # CSV dosya adları
     train_csv = "train.csv"
     val_csv = "validation.csv"
-    test_csv = "test.csv"
+    #test_csv = "test.csv"
 
     # Eğitim verisini yükle
     df_train = pd.read_csv(train_csv)
@@ -74,9 +74,9 @@ def main():
     X_val = df_val[df_val['label'] == 'benign'].iloc[:, :-1] if 'benign' in df_val['label'].values else df_val.iloc[:, :-1]
 
     # Test verisini yükle (şimdilik sadece kontrol için)
-    df_test = pd.read_csv(test_csv)
+    """df_test = pd.read_csv(test_csv)
     if df_test.columns[-1] != "label":
-        raise ValueError(f"Test CSV son sütun 'label' değil: {df_test.columns[-1]}")
+        raise ValueError(f"Test CSV son sütun 'label' değil: {df_test.columns[-1]}")"""
 
     # Özellik isimlerini kaydet
     features = list(X_train.columns)
