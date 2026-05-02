@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import joblib
+import os
 
 
 # ========================
@@ -106,47 +107,65 @@ def main():
     print("Device:", device, flush=True)
 
     # ========================
-    # DATA LOADING
+    # DATA LOADING (WITH CACHING)
     # ========================
-    df_train = load_csv_in_chunks("train.csv")
-    df_val = load_csv_in_chunks("validation.csv")
+    cache_files = ["train_tensor.pt", "val_tensor.pt", "scaler.pkl", "features.pkl"]
+    if all(os.path.exists(f) for f in cache_files):
+        print("Found cached tensors and scaler. Loading...", flush=True)
+        # Tensors'u CPU belleğine alıyoruz, sonra DataLoader bunları cihaza taşıyacak
+        X_train_tensor = torch.load("train_tensor.pt", map_location="cpu", weights_only=True)
+        X_val_tensor = torch.load("val_tensor.pt", map_location="cpu", weights_only=True)
+        scaler = joblib.load("scaler.pkl")
+        features = joblib.load("features.pkl")
+        print("Loaded cached data successfully.", flush=True)
+    else:
+        print("No cached data found. Loading from CSV...", flush=True)
+        df_train = load_csv_in_chunks("train.csv")
+        df_val = load_csv_in_chunks("validation.csv")
 
-    # DEBUG için küçültmek istersen aç:
-    # df_train = df_train.sample(100000)
-    # df_val = df_val.sample(20000)
+        # DEBUG için küçültmek istersen aç:
+        # df_train = df_train.sample(100000)
+        # df_val = df_val.sample(20000)
 
-    features = list(df_train.columns)
+        features = list(df_train.columns)
 
-    print("Scaling...", flush=True)
-    scaler = StandardScaler()
+        print("Scaling...", flush=True)
+        scaler = StandardScaler()
 
-    X_train_scaled = scaler.fit_transform(df_train.values)
-    X_val_scaled = scaler.transform(df_val.values)
+        X_train_scaled = scaler.fit_transform(df_train.values)
+        X_val_scaled = scaler.transform(df_val.values)
 
-    print("Scaling done", flush=True)
+        print("Scaling done", flush=True)
 
-    # ========================
-    # TENSOR
-    # ========================
-    X_train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32)
-    X_val_tensor = torch.tensor(X_val_scaled, dtype=torch.float32)
+        # ========================
+        # TENSOR
+        # ========================
+        X_train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32)
+        X_val_tensor = torch.tensor(X_val_scaled, dtype=torch.float32)
+
+        print("Saving tensors to cache...", flush=True)
+        torch.save(X_train_tensor, "train_tensor.pt")
+        torch.save(X_val_tensor, "val_tensor.pt")
+        joblib.dump(scaler, "scaler.pkl")
+        joblib.dump(features, "features.pkl")
+        print("Caching done.", flush=True)
 
     train_dataset = TensorDataset(X_train_tensor, X_train_tensor)
     val_dataset = TensorDataset(X_val_tensor, X_val_tensor)
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=32,
+        batch_size=2048,
         shuffle=True,
-        num_workers=2,
+        num_workers=4,
         pin_memory=True
     )
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=32,
+        batch_size=2048,
         shuffle=False,
-        num_workers=2,
+        num_workers=4,
         pin_memory=True
     )
 
@@ -156,6 +175,9 @@ def main():
     model = TransformerAutoencoder(input_dim=len(features)).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
+    
+    # Mixed Precision (AMP) için Scaler
+    amp_scaler = torch.amp.GradScaler(device.type) if device.type == 'cuda' else None
 
     num_epochs = 100
     best_val_loss = float("inf")
@@ -176,14 +198,22 @@ def main():
             targets = targets.to(device)
 
             optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-            loss.backward()
-            optimizer.step()
+            
+            with torch.autocast(device_type=device.type, dtype=torch.float16):
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+            
+            if amp_scaler is not None:
+                amp_scaler.scale(loss).backward()
+                amp_scaler.step(optimizer)
+                amp_scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
 
             train_loss += loss.item()
 
-            if i % 200 == 0:
+            if i % 50 == 0:
                 print(f"Epoch {epoch+1} Batch {i}", flush=True)
 
         train_loss /= len(train_loader)
@@ -197,8 +227,9 @@ def main():
                 inputs = inputs.to(device)
                 targets = targets.to(device)
 
-                outputs = model(inputs)
-                loss = criterion(outputs, targets)
+                with torch.autocast(device_type=device.type, dtype=torch.float16):
+                    outputs = model(inputs)
+                    loss = criterion(outputs, targets)
                 val_loss += loss.item()
 
         val_loss /= len(val_loader)
