@@ -17,11 +17,12 @@ Tespit için aşağıdaki dosyaların proje kökünde olması gerekir:
 
 | Dosya | Açıklama |
 |-------|----------|
-| `model.pkl` | Eğitilmiş sınıflandırıcı (örn. `sklearn` RandomForest) |
+| `model.pth` | Eğitilmiş PyTorch Transformer Sınıflandırıcı Modeli |
+| `scaler.pkl` | Veri ölçeklendirici (StandardScaler) |
 | `features.pkl` | Modelin kullandığı feature isimleri listesi |
 | `label_encoder.pkl` | LabelEncoder (metin etiket ↔ sayı) |
 
-Bu dosyalar CICIOT-23 formatında feature’lara sahip bir CSV ile eğitim pipeline’ından üretilir. Projedeki **eğitim kodu (`train_model.py`) Tramsformer Autoencoder ile eğitilmektedir**
+Bu dosyalar CICIOT-23 formatında feature’lara sahip bir CSV ile eğitim pipeline’ından üretilir. Projedeki **eğitim kodu (`train_model.py`) PyTorch kullanılarak Çok Sınıflı (Multi-class) Transformer Sınıflandırıcı ile eğitilmektedir.**
 
 ## Model ve feature uyumluluğunu kontrol etme
 
@@ -33,10 +34,10 @@ python check_model.py
 
 Bu script şunları kontrol eder:
 
-- `model.pkl`, `features.pkl`, `label_encoder.pkl` dosyalarının varlığı
+- `model.pth`, `scaler.pkl`, `features.pkl`, `label_encoder.pkl` dosyalarının varlığı
 - `features.pkl` içindeki kolon isimlerinin `detector_from_flows.py` içindeki CICIOT-23 feature listesiyle uyumu
 - Modelin beklediği feature sayısı ile `features.pkl` uzunluğunun eşleşmesi
-- Örnek bir vektörle tahmin denemesi
+- Örnek bir vektörle tahmin denemesi ve sınıf/güven oranı çıktısı
 
 Tüm kontroller geçerse çıktıda “Tüm kontroller geçti” yazar.
 
@@ -123,9 +124,10 @@ Yeni train scriptinin **proje köküne** aşağıdaki üç dosyayı üretmesi ge
 
 | Çıktı dosyası | Format | Beklenti |
 |---------------|--------|----------|
-| **`model.pkl`** | `joblib.dump(model, "model.pkl")` | `sklearn` uyumlu sınıflandırıcı: `.predict(X)` ve (tercihen) `.n_features_in_` olmalı. `X` tek satırlık veya çok satırlık DataFrame veya 2D array; kolonlar `features.pkl` ile aynı sırada. |
-| **`features.pkl`** | `joblib.dump(list_of_names, "features.pkl")` | Modelin kullandığı feature isimlerinin **listesi** (string). İsimler `detector_from_flows.py` içindeki `FEATURE_HEADER` listesinde olmalı; **`label` dahil edilmemeli**. Sıra, eğitimde modele verilen kolon sırasıyla aynı olmalı. |
-| **`label_encoder.pkl`** | `joblib.dump(le, "label_encoder.pkl")` | `sklearn.preprocessing.LabelEncoder`: `.fit_transform()` ile sayıya, `.inverse_transform()` ile metin etikete çevrilmiş olmalı. `.classes_` sınıf isimlerini içerir. |
+| **`model.pth`** | `torch.save(model.state_dict(), "model.pth")` | PyTorch TransformerClassifier ağırlıkları. |
+| **`scaler.pkl`** | `joblib.dump(scaler, "scaler.pkl")` | `sklearn.preprocessing.StandardScaler` nesnesi. |
+| **`features.pkl`** | `joblib.dump(list_of_names, "features.pkl")` | Modelin kullandığı feature isimlerinin listesi (string). `label` hariçtir. |
+| **`label_encoder.pkl`** | `joblib.dump(le, "label_encoder.pkl")` | `sklearn.preprocessing.LabelEncoder`: Çıktıları tekrar metin etikete çevirir. |
 
 - Feature isimleri **CICIOT-23** ile uyumlu olmalı (örn. `Magnitue`, `Header_Length`, `Tot sum` vb.); detector canlıda bu isimlerle kolon üretiyor.
 - Eğitim CSV’sindeki kolon isimleri bu feature listesiyle bire bir eşleşmeli (label hariç).
